@@ -1,0 +1,6 @@
+docker
+requests
+pandas
+streamlit
+kubernetes
+python-nmap
