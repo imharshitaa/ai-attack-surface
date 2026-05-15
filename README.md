@@ -1,6 +1,6 @@
-# AI Surface Scanner
+# AI Attack Surface Management 
 
-AI Surface Scanner is a lightweight AI attack surface discovery and exposure assessment platform. It simulates a realistic enterprise AI environment by discovering AI runtimes, notebooks, inference APIs, AI web interfaces, vector database exposure, Docker containers, and optional Kubernetes workloads.
+AI Attack Surface Management is a lightweight AI attack surface discovery and exposure assessment platform. It simulates a realistic enterprise AI environment by discovering AI runtimes, notebooks, inference APIs, AI web interfaces, vector database exposure, Docker containers, and optional Kubernetes workloads.
 
 The project is intentionally beginner friendly. It avoids heavy enterprise complexity while still modeling the visibility questions security teams face when AI services appear across containers, developer systems, and cloud-native platforms.
 
