@@ -12,7 +12,13 @@ import logging
 import re
 from pathlib import Path
 
-import requests
+from cloud_discovery import discover_cloud_assets, summarize_asset
+from cloud_logs import analyze_ai_provider_traffic
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 try:
     import docker
@@ -172,6 +178,17 @@ SERVICE_PROFILES = {
         "mitre_atlas_tactic": "Collection",
         "mitre_atlas_technique": "Collect AI Application Data",
     },
+    "AI Provider API": {
+        "keywords": ["api.openai.com", "anthropic.com", "huggingface.co", "replicate.com", "cohere.ai"],
+        "classification": "External AI Provider",
+        "attack_surface": "AI Provider Communication",
+        "risk": "Medium",
+        "risk_score": 6,
+        "issue": "Outbound AI provider communication may indicate unmanaged AI API usage.",
+        "recommendation": "Review egress controls, API key handling, and approved AI provider usage.",
+        "mitre_atlas_tactic": "Command and Control",
+        "mitre_atlas_technique": "External AI Service Communication",
+    },
     "Unknown": {
         "keywords": [],
         "classification": "Unknown",
@@ -239,6 +256,15 @@ CSV_COLUMNS = [
     "mitre_atlas_technique",
     "risk",
     "risk_score",
+    "cloud_provider",
+    "region",
+    "subnet",
+    "gpu_enabled",
+    "public_exposure",
+    "ai_provider",
+    "provider_type",
+    "outbound_ai_traffic",
+    "telemetry_source",
 ]
 
 
@@ -312,6 +338,19 @@ def build_attack_path(service, exposure_category):
     )
 
 
+def enrich_cloud_attack_path(base_attack_path, public_exposure="", ai_provider=""):
+    """Add cloud exposure and provider context to an attack path string."""
+    path = base_attack_path
+
+    if public_exposure == "true":
+        path = "Public cloud exposure -> " + path
+
+    if ai_provider:
+        path = f"{path} -> outbound {ai_provider} communication"
+
+    return path
+
+
 def build_finding(
     source,
     discovery_source,
@@ -326,9 +365,24 @@ def build_finding(
     page_title="",
     exposure_category="",
     evidence="",
+    cloud_provider="",
+    region="",
+    subnet="",
+    gpu_enabled="",
+    public_exposure="",
+    ai_provider="",
+    provider_type="",
+    outbound_ai_traffic="",
+    telemetry_source="",
 ):
     profile = get_service_profile(detected_service)
     category = exposure_category or analyze_exposure(detected_service, http_status)
+
+    attack_path = enrich_cloud_attack_path(
+        build_attack_path(detected_service, category),
+        str(public_exposure).lower(),
+        ai_provider,
+    )
 
     return {
         "source": source,
@@ -348,11 +402,20 @@ def build_finding(
         "evidence": evidence,
         "issue": profile["issue"],
         "recommendation": profile["recommendation"],
-        "attack_path": build_attack_path(detected_service, category),
+        "attack_path": attack_path,
         "mitre_atlas_tactic": profile["mitre_atlas_tactic"],
         "mitre_atlas_technique": profile["mitre_atlas_technique"],
         "risk": profile["risk"],
         "risk_score": profile["risk_score"],
+        "cloud_provider": cloud_provider,
+        "region": region,
+        "subnet": subnet,
+        "gpu_enabled": gpu_enabled,
+        "public_exposure": public_exposure,
+        "ai_provider": ai_provider,
+        "provider_type": provider_type,
+        "outbound_ai_traffic": outbound_ai_traffic,
+        "telemetry_source": telemetry_source,
     }
 
 
@@ -436,6 +499,11 @@ def fingerprint_http_response(target, response):
 
 def fingerprint_http_services():
     findings = []
+
+    if requests is None:
+        logging.warning("requests is not installed. Skipping HTTP fingerprinting.")
+        return findings
+
     session = requests.Session()
 
     logging.info("Probing common local AI service endpoints...")
@@ -583,6 +651,161 @@ def enumerate_kubernetes_workloads():
     return findings
 
 
+def analyze_cloud_asset_exposure(asset):
+    """Create a cloud-native exposure category for a simulated cloud asset."""
+    public_exposure = asset.get("public_exposure", False)
+    gpu_enabled = asset.get("gpu_enabled", False)
+    open_ports = asset.get("open_ports", [])
+    service = asset.get("detected_service", "Unknown")
+
+    if public_exposure and gpu_enabled:
+        return "Public GPU AI Workload"
+
+    if service in {"vLLM", "HuggingFace TGI", "NVIDIA Triton", "TorchServe", "TensorFlow Serving"}:
+        return "Cloud Inference API Exposure"
+
+    if service == "Redis Vector DB":
+        return "Cloud Vector Database Exposure"
+
+    if public_exposure and open_ports:
+        return "Public Cloud AI Service Exposure"
+
+    return analyze_exposure(service)
+
+
+def discover_cloud_ai_assets():
+    """Simulate cloud compute, GPU, and AI workload discovery."""
+    findings = []
+    assets = discover_cloud_assets()
+
+    logging.info("Loaded %s simulated cloud asset(s).", len(assets))
+
+    for asset in assets:
+        detected_service = asset.get("detected_service", "Unknown")
+        exposure_category = analyze_cloud_asset_exposure(asset)
+        public_exposure = str(asset.get("public_exposure", False)).lower()
+        gpu_enabled = str(asset.get("gpu_enabled", False)).lower()
+
+        findings.append(
+            build_finding(
+                source="cloud",
+                discovery_source="mock_cloud_inventory",
+                asset_name=asset.get("instance_name", "unknown-cloud-asset"),
+                image="",
+                status="running",
+                detected_service=detected_service,
+                detection_method="cloud_asset_metadata",
+                endpoint=",".join(str(port) for port in asset.get("open_ports", [])),
+                exposure_category=exposure_category,
+                evidence=summarize_asset(asset),
+                cloud_provider=asset.get("cloud_provider", "GenericCloud"),
+                region=asset.get("region", ""),
+                subnet=asset.get("subnet", ""),
+                gpu_enabled=gpu_enabled,
+                public_exposure=public_exposure,
+                telemetry_source="cloud_asset_inventory",
+            )
+        )
+
+        logging.info(
+            "Cloud discovery detected %s on %s.",
+            detected_service,
+            asset.get("instance_name", "unknown-cloud-asset"),
+        )
+
+    return findings
+
+
+def analyze_cloud_ai_logs():
+    """Simulate cloud telemetry analysis for outbound AI provider traffic."""
+    findings = []
+    detections = analyze_ai_provider_traffic()
+
+    logging.info("Detected %s AI provider telemetry event(s).", len(detections))
+
+    for event in detections:
+        ai_provider = event.get("provider", "")
+        destination = event.get("destination_domain", "")
+        telemetry_source = event.get("telemetry_source", "cloud_logs")
+
+        findings.append(
+            build_finding(
+                source="cloud",
+                discovery_source="mock_cloud_telemetry",
+                asset_name=event.get("asset_name", "unknown-cloud-asset"),
+                image="",
+                status="observed",
+                detected_service="AI Provider API",
+                detection_method="cloud_log_ai_provider_detection",
+                endpoint=f"{destination}:{event.get('destination_port', 443)}",
+                exposure_category="AI API Usage Exposure",
+                evidence=(
+                    f"{telemetry_source} observed outbound traffic to {destination} "
+                    f"with {event.get('bytes_out', 0)} bytes sent"
+                ),
+                ai_provider=ai_provider,
+                provider_type=event.get("provider_type", ""),
+                outbound_ai_traffic="true",
+                telemetry_source=telemetry_source,
+            )
+        )
+
+        logging.info("Cloud telemetry detected outbound %s communication.", ai_provider)
+
+    return findings
+
+
+def correlate_cloud_attack_paths(cloud_asset_findings, cloud_log_findings):
+    """Correlate cloud assets and AI provider traffic into attack path findings."""
+    findings = []
+    logs_by_asset = {}
+
+    for log_finding in cloud_log_findings:
+        logs_by_asset.setdefault(log_finding["asset_name"], []).append(log_finding)
+
+    for asset_finding in cloud_asset_findings:
+        related_logs = logs_by_asset.get(asset_finding["asset_name"], [])
+
+        if not related_logs:
+            continue
+
+        for log_finding in related_logs:
+            findings.append(
+                build_finding(
+                    source="cloud",
+                    discovery_source="cloud_correlation_engine",
+                    asset_name=asset_finding["asset_name"],
+                    image="",
+                    status="correlated",
+                    detected_service=asset_finding["detected_service"],
+                    detection_method="asset_telemetry_correlation",
+                    endpoint=asset_finding.get("endpoint", ""),
+                    exposure_category="Correlated Cloud AI Exposure",
+                    evidence=(
+                        f"Correlated {asset_finding['attack_surface_classification']} with "
+                        f"outbound {log_finding['ai_provider']} communication"
+                    ),
+                    cloud_provider=asset_finding.get("cloud_provider", ""),
+                    region=asset_finding.get("region", ""),
+                    subnet=asset_finding.get("subnet", ""),
+                    gpu_enabled=asset_finding.get("gpu_enabled", ""),
+                    public_exposure=asset_finding.get("public_exposure", ""),
+                    ai_provider=log_finding.get("ai_provider", ""),
+                    provider_type=log_finding.get("provider_type", ""),
+                    outbound_ai_traffic="true",
+                    telemetry_source="asset_and_telemetry_correlation",
+                )
+            )
+
+            logging.info(
+                "Correlated cloud attack path for %s with %s.",
+                asset_finding["asset_name"],
+                log_finding["ai_provider"],
+            )
+
+    return findings
+
+
 def save_findings(findings, output_file=FINDINGS_FILE):
     temporary_file = output_file.with_suffix(".tmp")
 
@@ -615,6 +838,16 @@ def main():
         default="127.0.0.1",
         help="Host or CIDR to scan when --network-scan is enabled",
     )
+    parser.add_argument(
+        "--cloud-discovery",
+        action="store_true",
+        help="Run simulated cloud AI asset discovery",
+    )
+    parser.add_argument(
+        "--cloud-logs",
+        action="store_true",
+        help="Run simulated cloud telemetry and AI provider log analysis",
+    )
     parser.add_argument("--debug", action="store_true", help="Show debug logging messages")
     args = parser.parse_args()
 
@@ -634,6 +867,20 @@ def main():
 
     if args.include_kubernetes:
         findings.extend(enumerate_kubernetes_workloads())
+
+    cloud_asset_findings = []
+    cloud_log_findings = []
+
+    if args.cloud_discovery:
+        cloud_asset_findings = discover_cloud_ai_assets()
+        findings.extend(cloud_asset_findings)
+
+    if args.cloud_logs:
+        cloud_log_findings = analyze_cloud_ai_logs()
+        findings.extend(cloud_log_findings)
+
+    if cloud_asset_findings and cloud_log_findings:
+        findings.extend(correlate_cloud_attack_paths(cloud_asset_findings, cloud_log_findings))
 
     save_findings(findings)
     logging.info("Saved %s AI exposure finding(s) to %s.", len(findings), FINDINGS_FILE)

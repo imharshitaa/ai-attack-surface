@@ -2,6 +2,8 @@
 
 AI Attack Surface Management is a lightweight AI attack surface discovery and exposure assessment platform. It simulates a realistic enterprise AI environment by discovering AI runtimes, notebooks, inference APIs, AI web interfaces, vector database exposure, Docker containers, and optional Kubernetes workloads.
 
+AI Surface Scanner is a lightweight AI attack surface discovery and exposure assessment platform. It simulates a realistic enterprise AI environment by discovering AI runtimes, notebooks, inference APIs, AI web interfaces, vector database exposure, Docker containers, optional Kubernetes workloads, cloud compute assets, and cloud telemetry.
+
 The project is intentionally beginner friendly. It avoids heavy enterprise complexity while still modeling the visibility questions security teams face when AI services appear across containers, developer systems, and cloud-native platforms.
 
 ## Architecture Diagram
@@ -22,8 +24,62 @@ The scanner tracks where each finding came from:
 - `http_probe` for common AI HTTP endpoints.
 - `python_nmap` for AI-relevant open ports.
 - `kubernetes_api` for Kubernetes pod image discovery.
+- `mock_cloud_inventory` for simulated cloud compute and GPU AI asset discovery.
+- `mock_cloud_telemetry` for simulated DNS, flow, activity, and outbound connection logs.
+- `cloud_correlation_engine` for asset and telemetry attack path correlation.
 
 This makes findings easier to explain during a security engineering assessment.
+
+## Cloud-Native AI Discovery
+
+The cloud discovery module is provider-neutral and works without cloud credentials. It uses mock data to simulate the same concepts an enterprise AI security platform would collect from cloud APIs:
+
+- compute instance name
+- public or private exposure
+- GPU-enabled status
+- tags and workload metadata
+- subnet and region
+- open AI-relevant ports
+- AI workload indicators
+
+Run cloud asset discovery:
+
+```powershell
+python scanner.py --cloud-discovery
+```
+
+## Cloud Telemetry Analysis
+
+The cloud log module simulates telemetry-driven discovery from:
+
+- activity logs
+- flow logs
+- DNS logs
+- outbound connection records
+
+It detects outbound communication to AI providers:
+
+| Provider | Example Domain |
+| --- | --- |
+| OpenAI | `api.openai.com` |
+| Anthropic | `anthropic.com` |
+| HuggingFace | `huggingface.co` |
+| Replicate | `replicate.com` |
+| Cohere | `cohere.ai` |
+
+Run cloud telemetry analysis:
+
+```powershell
+python scanner.py --cloud-logs
+```
+
+Run cloud inventory and telemetry correlation together:
+
+```powershell
+python scanner.py --cloud-discovery --cloud-logs
+```
+
+When both flags are used, the scanner correlates cloud compute assets with AI provider communication and creates attack path style findings.
 
 ## AI Services and Exposures
 
@@ -98,6 +154,7 @@ The project focuses on realistic AI security visibility concerns:
 - Inference API exposure can lead to model abuse, cost abuse, or prompt-based data leakage.
 - Vector database exposure can reveal embeddings, retrieval data, or application memory.
 - Cloud-native AI workload exposure can leave internal model infrastructure reachable from unexpected paths.
+- Outbound AI provider communication can reveal unmanaged AI API usage or sensitive data movement.
 
 ## Findings Output
 
@@ -113,6 +170,13 @@ The project focuses on realistic AI security visibility concerns:
 - attack path
 - MITRE ATLAS tactic and technique
 - severity and numeric risk score
+- cloud provider
+- region and subnet
+- GPU enabled status
+- public exposure status
+- AI provider
+- outbound AI traffic
+- telemetry source
 
 ## Dashboard
 
@@ -125,6 +189,12 @@ The Streamlit dashboard includes:
 - discovery source tracking
 - AI asset inventory
 - attack surface classification
+- cloud AI asset inventory
+- AI provider communication chart
+- GPU workload metrics
+- public exposure metrics
+- cloud telemetry findings
+- outbound AI traffic findings
 - attack path visualization section
 - AI-specific exposure findings table
 
@@ -163,7 +233,7 @@ python scanner.py --include-kubernetes
 Run everything:
 
 ```powershell
-python scanner.py --network-scan --include-kubernetes
+python scanner.py --network-scan --include-kubernetes --cloud-discovery --cloud-logs
 ```
 
 Start the dashboard:

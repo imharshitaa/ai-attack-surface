@@ -31,6 +31,15 @@ DEFAULT_COLUMNS = {
     "recommendation": "Review the asset manually and update scanner output if needed.",
     "mitre_atlas_tactic": "Unknown",
     "mitre_atlas_technique": "Unknown",
+    "cloud_provider": "",
+    "region": "",
+    "subnet": "",
+    "gpu_enabled": "false",
+    "public_exposure": "false",
+    "ai_provider": "",
+    "provider_type": "",
+    "outbound_ai_traffic": "false",
+    "telemetry_source": "",
 }
 
 
@@ -42,7 +51,10 @@ st.caption("Enterprise AI workload visibility, exposure analysis, and attack pat
 
 @st.cache_data
 def load_findings(path):
-    return pd.read_csv(path)
+    try:
+        return pd.read_csv(path)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError):
+        return pd.DataFrame()
 
 
 def normalize_findings(dataframe):
@@ -59,6 +71,11 @@ def normalize_findings(dataframe):
     normalized["detected_service"] = (
         normalized["detected_service"].fillna("Unknown").replace("", "Unknown")
     )
+    normalized["gpu_enabled"] = normalized["gpu_enabled"].fillna("false").astype(str).str.lower()
+    normalized["public_exposure"] = normalized["public_exposure"].fillna("false").astype(str).str.lower()
+    normalized["outbound_ai_traffic"] = (
+        normalized["outbound_ai_traffic"].fillna("false").astype(str).str.lower()
+    )
 
     missing_attack_path = normalized["attack_path"].isna() | (normalized["attack_path"] == "")
     normalized.loc[missing_attack_path, "attack_path"] = (
@@ -74,6 +91,22 @@ def normalize_findings(dataframe):
 
 def available_columns(dataframe, columns):
     return [column for column in columns if column in dataframe.columns]
+
+
+def sort_by_risk_score(dataframe):
+    """Sort by risk_score even when a partial dataframe is missing the column."""
+    sortable = dataframe.copy()
+
+    if "risk_score" not in sortable.columns:
+        sortable["risk_score"] = 0
+
+    sortable["risk_score"] = pd.to_numeric(sortable["risk_score"], errors="coerce").fillna(0)
+    return sortable.sort_values("risk_score", ascending=False)
+
+
+def truthy_count(series):
+    """Count true-like values in a defensive way."""
+    return series.astype(str).str.lower().isin(["true", "yes", "1"]).sum()
 
 
 if not FINDINGS_FILE.exists():
@@ -94,6 +127,9 @@ high_count = len(findings[findings["risk"] == "High"])
 service_count = findings["detected_service"].nunique()
 avg_risk = round(findings["risk_score"].mean(), 1)
 source_count = findings["discovery_source"].nunique()
+gpu_count = truthy_count(findings["gpu_enabled"])
+public_count = truthy_count(findings["public_exposure"])
+outbound_ai_count = truthy_count(findings["outbound_ai_traffic"])
 
 metric_1, metric_2, metric_3, metric_4, metric_5, metric_6 = st.columns(6)
 metric_1.metric("Findings", total_findings)
@@ -102,6 +138,11 @@ metric_3.metric("High", high_count)
 metric_4.metric("AI Services", service_count)
 metric_5.metric("Avg Score", avg_risk)
 metric_6.metric("Sources", source_count)
+
+cloud_metric_1, cloud_metric_2, cloud_metric_3 = st.columns(3)
+cloud_metric_1.metric("GPU Workloads", gpu_count)
+cloud_metric_2.metric("Public Cloud Assets", public_count)
+cloud_metric_3.metric("Outbound AI Traffic", outbound_ai_count)
 
 st.divider()
 
@@ -120,6 +161,32 @@ with right_column:
     st.subheader("Exposure Categories")
     st.bar_chart(findings["exposure_category"].value_counts())
 
+left_column, middle_column, right_column = st.columns(3)
+
+with left_column:
+    st.subheader("Cloud Regions")
+    region_counts = findings[findings["region"] != ""]["region"].value_counts()
+    if region_counts.empty:
+        st.info("No cloud region data available.")
+    else:
+        st.bar_chart(region_counts)
+
+with middle_column:
+    st.subheader("AI Provider Communication")
+    provider_counts = findings[findings["ai_provider"] != ""]["ai_provider"].value_counts()
+    if provider_counts.empty:
+        st.info("No outbound AI provider traffic detected.")
+    else:
+        st.bar_chart(provider_counts)
+
+with right_column:
+    st.subheader("Telemetry Sources")
+    telemetry_counts = findings[findings["telemetry_source"] != ""]["telemetry_source"].value_counts()
+    if telemetry_counts.empty:
+        st.info("No cloud telemetry source data available.")
+    else:
+        st.bar_chart(telemetry_counts)
+
 
 left_column, right_column = st.columns(2)
 
@@ -128,7 +195,7 @@ with left_column:
     st.dataframe(
         findings["discovery_source"].value_counts().rename_axis("source").reset_index(name="findings"),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
 with right_column:
@@ -139,7 +206,7 @@ with right_column:
         .rename_axis("classification")
         .reset_index(name="findings"),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -156,13 +223,18 @@ inventory_columns = available_columns(
         "image",
         "endpoint",
         "status",
+        "cloud_provider",
+        "region",
+        "subnet",
+        "gpu_enabled",
+        "public_exposure",
     ],
 )
 
 st.dataframe(
     findings[inventory_columns].drop_duplicates(),
     hide_index=True,
-    use_container_width=True,
+    width="stretch",
     column_config={
         "asset_name": st.column_config.TextColumn("Asset"),
         "source": st.column_config.TextColumn("Source"),
@@ -173,14 +245,48 @@ st.dataframe(
         "image": st.column_config.TextColumn("Image"),
         "endpoint": st.column_config.TextColumn("Endpoint"),
         "status": st.column_config.TextColumn("Status"),
+        "cloud_provider": st.column_config.TextColumn("Cloud"),
+        "region": st.column_config.TextColumn("Region"),
+        "subnet": st.column_config.TextColumn("Subnet"),
+        "gpu_enabled": st.column_config.TextColumn("GPU"),
+        "public_exposure": st.column_config.TextColumn("Public"),
     },
 )
 
+st.subheader("Cloud Telemetry Findings")
+telemetry_findings = findings[
+    (findings["telemetry_source"] != "") | (findings["outbound_ai_traffic"] == "true")
+]
+
+telemetry_columns = available_columns(
+    telemetry_findings,
+    [
+        "risk",
+        "asset_name",
+        "ai_provider",
+        "provider_type",
+        "outbound_ai_traffic",
+        "telemetry_source",
+        "endpoint",
+        "evidence",
+        "recommendation",
+    ],
+)
+
+if telemetry_findings.empty:
+    st.info("No cloud telemetry findings available. Run `python scanner.py --cloud-logs`.")
+else:
+    st.dataframe(
+        sort_by_risk_score(telemetry_findings)[telemetry_columns],
+        hide_index=True,
+        width="stretch",
+    )
+
 
 st.subheader("Attack Path Visualization")
-attack_paths = findings[
+attack_paths = sort_by_risk_score(findings)[
     ["risk", "risk_score", "asset_name", "detected_service", "attack_path"]
-].sort_values("risk_score", ascending=False)
+]
 
 for _, row in attack_paths.head(5).iterrows():
     st.markdown(
@@ -206,6 +312,14 @@ finding_columns = available_columns(
         "http_status",
         "server_header",
         "page_title",
+        "cloud_provider",
+        "region",
+        "subnet",
+        "gpu_enabled",
+        "public_exposure",
+        "ai_provider",
+        "outbound_ai_traffic",
+        "telemetry_source",
         "issue",
         "recommendation",
         "mitre_atlas_tactic",
@@ -214,9 +328,9 @@ finding_columns = available_columns(
 )
 
 st.dataframe(
-    findings[finding_columns].sort_values("risk_score", ascending=False),
+    sort_by_risk_score(findings)[finding_columns],
     hide_index=True,
-    use_container_width=True,
+    width="stretch",
     column_config={
         "risk": st.column_config.TextColumn("Risk"),
         "risk_score": st.column_config.NumberColumn("Score"),
@@ -231,6 +345,14 @@ st.dataframe(
         "http_status": st.column_config.NumberColumn("HTTP"),
         "server_header": st.column_config.TextColumn("Server"),
         "page_title": st.column_config.TextColumn("Page Title"),
+        "cloud_provider": st.column_config.TextColumn("Cloud"),
+        "region": st.column_config.TextColumn("Region"),
+        "subnet": st.column_config.TextColumn("Subnet"),
+        "gpu_enabled": st.column_config.TextColumn("GPU"),
+        "public_exposure": st.column_config.TextColumn("Public"),
+        "ai_provider": st.column_config.TextColumn("AI Provider"),
+        "outbound_ai_traffic": st.column_config.TextColumn("Outbound AI"),
+        "telemetry_source": st.column_config.TextColumn("Telemetry"),
         "issue": st.column_config.TextColumn("Issue"),
         "recommendation": st.column_config.TextColumn("Recommendation"),
         "mitre_atlas_tactic": st.column_config.TextColumn("ATLAS Tactic"),
